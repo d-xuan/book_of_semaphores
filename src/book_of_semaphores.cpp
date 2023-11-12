@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -43,16 +42,15 @@ void rendezvous() {
 // Given threads A, B and shared variable `count`, enforce mutual exclusion on
 // `count`
 
-void mutex_thread(std::atomic_int32_t &count,
-                  std::binary_semaphore &count_mutex) {
+void mutex_thread(int32_t &count, std::binary_semaphore &count_mutex) {
   count_mutex.acquire();
-  count += 1;
+  count++;
   count_mutex.release();
 }
 
 void mutex() {
   std::binary_semaphore count_mutex(1);
-  std::atomic_int32_t count = 0;
+  int32_t count = 0;
 
   std::thread thread_a(mutex_thread, std::ref(count), std::ref(count_mutex));
   std::thread thread_b(mutex_thread, std::ref(count), std::ref(count_mutex));
@@ -70,7 +68,7 @@ template <int64_t N>
 void multiplex_thread(std::counting_semaphore<N> &multiplex_semaphore) {
   multiplex_semaphore.acquire();
   std::cout << "Multiplex: Entering Critical Region\n";
-  std::this_thread::sleep_for(std::chrono::seconds(5));
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   std::cout << "Multiplex: Leaving Critical Region\n";
   multiplex_semaphore.release();
 }
@@ -94,6 +92,59 @@ void multiplex() {
   }
 }
 
+// Barrier (generalised Rendezvous)
+//
+template <int64_t N>
+void barrier_thread(int32_t &count, std::binary_semaphore &count_mutex,
+                    std::counting_semaphore<N> &turnstile,
+                    std::counting_semaphore<N> &turnstile2,
+                    const int32_t nthreads) {
+
+  for (int32_t i = 0; i < 5; i++) {
+    count_mutex.acquire();
+    count++;
+    if (count == nthreads) {
+      turnstile.release(nthreads);
+    }
+    count_mutex.release();
+
+    turnstile.acquire();
+
+    // Do work
+    printf("Barrier: Doing work on iteration %d\n", i);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    count_mutex.acquire();
+    count--;
+    if (!count) {
+      turnstile2.release(nthreads);
+    }
+    count_mutex.release();
+
+    turnstile2.acquire();
+  }
+}
+
+void barrier() {
+  const int32_t nthreads = 10;
+  int32_t count = 0;
+  std::binary_semaphore count_mutex(1);
+  std::counting_semaphore<nthreads> turnstile(0);
+  std::counting_semaphore<nthreads> turnstile2(0);
+
+  std::thread threads[nthreads];
+
+  for (int i = 0; i < nthreads; i++) {
+    threads[i] = std::thread(barrier_thread<nthreads>, std::ref(count),
+                             std::ref(count_mutex), std::ref(turnstile),
+                             std::ref(turnstile2), nthreads);
+  }
+
+  for (int i = 0; i < nthreads; i++) {
+    threads[i].join();
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc != 1) {
     printf("%s takes no arguments.\n", argv[0]);
@@ -102,5 +153,6 @@ int main(int argc, char **argv) {
   rendezvous();
   mutex();
   multiplex();
+  barrier();
   return 0;
 }

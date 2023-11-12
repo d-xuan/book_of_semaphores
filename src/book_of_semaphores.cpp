@@ -92,52 +92,64 @@ void multiplex() {
   }
 }
 
-// Barrier (generalised Rendezvous)
-//
-template <int64_t N>
-void barrier_thread(int32_t &count, std::binary_semaphore &count_mutex,
-                    std::counting_semaphore<N> &turnstile,
-                    std::counting_semaphore<N> &turnstile2,
-                    const int32_t nthreads) {
+// Two phase barrier class
+class Barrier {
+public:
+  Barrier(int32_t n)
+      : m_nthreads(n), m_mutex(std::binary_semaphore(1)),
+        m_turnstile(std::counting_semaphore<1>(0)),
+        m_turnstile2(std::counting_semaphore<1>(0)){};
 
-  for (int32_t i = 0; i < 5; i++) {
-    count_mutex.acquire();
-    count++;
-    if (count == nthreads) {
-      turnstile.release(nthreads);
+  void acquire() {
+    this->phase_1();
+    this->phase_2();
+  }
+
+private:
+  const int32_t m_nthreads;
+  int32_t m_count = 0;
+  std::binary_semaphore m_mutex;
+  std::counting_semaphore<1> m_turnstile;
+  std::counting_semaphore<1> m_turnstile2;
+
+  void phase_1() {
+    m_mutex.acquire();
+    m_count++;
+    if (m_count == m_nthreads) {
+      m_turnstile.release(m_nthreads);
     }
-    count_mutex.release();
+    m_mutex.release();
+    m_turnstile.acquire();
+  };
 
-    turnstile.acquire();
+  void phase_2() {
+    m_mutex.acquire();
+    m_count--;
+    if (!m_count) {
+      m_turnstile2.release(m_nthreads);
+    }
+    m_mutex.release();
+    m_turnstile2.acquire();
+  }
+};
 
+// Barrier (generalised Rendezvous)
+void barrier_thread(Barrier &barrier) {
+  for (int32_t i = 0; i < 5; i++) {
+    barrier.acquire();
     // Do work
     printf("Barrier: Doing work on iteration %d\n", i);
     std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    count_mutex.acquire();
-    count--;
-    if (!count) {
-      turnstile2.release(nthreads);
-    }
-    count_mutex.release();
-
-    turnstile2.acquire();
   }
 }
 
 void barrier() {
   const int32_t nthreads = 10;
-  int32_t count = 0;
-  std::binary_semaphore count_mutex(1);
-  std::counting_semaphore<nthreads> turnstile(0);
-  std::counting_semaphore<nthreads> turnstile2(0);
-
   std::thread threads[nthreads];
+  Barrier barrier(nthreads);
 
   for (int i = 0; i < nthreads; i++) {
-    threads[i] = std::thread(barrier_thread<nthreads>, std::ref(count),
-                             std::ref(count_mutex), std::ref(turnstile),
-                             std::ref(turnstile2), nthreads);
+    threads[i] = std::thread(barrier_thread, std::ref(barrier));
   }
 
   for (int i = 0; i < nthreads; i++) {
